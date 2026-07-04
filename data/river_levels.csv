@@ -1,0 +1,9 @@
+station_name,state,river_name,latitude,longitude,river_level,warning_level,danger_level,reading_time
+Chennai Adyar Station,Tamil Nadu,Adyar River,13.0067,80.2206,3.2,4.5,5.5,2026-07-04 10:00:00
+Chennai Cooum Station,Tamil Nadu,Cooum River,13.0732,80.2609,2.8,4.0,5.0,2026-07-04 10:00:00
+Mumbai Mithi Station,Maharashtra,Mithi River,19.0860,72.8847,3.9,4.8,5.8,2026-07-04 10:00:00
+Delhi Yamuna Station,Delhi,Yamuna River,28.6139,77.2090,204.5,204.5,205.3,2026-07-04 10:00:00
+Bangalore Vrishabhavathi Station,Karnataka,Vrishabhavathi River,12.9716,77.5946,2.4,3.8,4.8,2026-07-04 10:00:00
+Kochi Periyar Station,Kerala,Periyar River,10.0159,76.3419,4.1,5.0,6.0,2026-07-04 10:00:00
+Patna Ganga Station,Bihar,Ganga River,25.5941,85.1376,47.2,48.0,49.0,2026-07-04 10:00:00
+Guwahati Brahmaputra Station,Assam,Brahmaputra River,26.1445,91.7362,48.7,49.5,50.5,2026-07-04 10:00:00

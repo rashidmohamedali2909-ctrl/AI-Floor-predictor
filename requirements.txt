@@ -1,0 +1,11 @@
+pandas
+numpy
+scikit-learn
+streamlit
+joblib
+requests
+folium
+streamlit-folium
+reportlab
+supabase
+google-genai

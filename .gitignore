@@ -1,5 +1,55 @@
+# Streamlit secrets
 .streamlit/secrets.toml
+
+# Python byte-compiled / optimized / DLL files
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+
+# Python virtual environments
+venv/
+.venv/
+env/
+ENV/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Environment and sensitive keys
 .env
+.env.local
+.env.*
+secrets.toml
+
+# System files (OS-specific)
 .DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# IDEs, editors and workspaces
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*~
+
+# Project-specific logs and history database outputs
+*.log
+data/prediction_history.csv
+test_gemini.py

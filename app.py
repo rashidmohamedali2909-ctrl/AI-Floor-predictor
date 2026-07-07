@@ -16,6 +16,21 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import json
 import base64
+import logging
+
+# Helper to read secrets safely and avoid crashes if config is missing
+def get_secret_safe(key, default=""):
+    try:
+        return st.secrets.get(key, default)
+    except Exception:
+        return default
+
+def is_supabase_configured():
+    url = get_secret_safe("SUPABASE_URL", "")
+    key = get_secret_safe("SUPABASE_KEY", "")
+    if not url or not key or "paste_your" in url or "paste_your" in key or url.strip() == "" or key.strip() == "":
+        return False
+    return True
 
 # Page setup
 st.set_page_config(
@@ -178,6 +193,48 @@ def get_river_status(river_level, warning_level, danger_level):
         return "Normal"
 
 
+import math
+
+def calculate_distance(lat1, lon1, lat2, lon2):
+    # Haversine formula
+    R = 6371.0  # Earth radius in km
+    try:
+        dlat = math.radians(lat2 - lat1)
+        dlon = math.radians(lon2 - lon1)
+        a = (
+            math.sin(dlat / 2) ** 2
+            + math.cos(math.radians(lat1))
+            * math.cos(math.radians(lat2))
+            * math.sin(dlon / 2) ** 2
+        )
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        return R * c
+    except Exception:
+        return 9999.0  # Safe fallback high distance
+
+
+def find_nearest_station(lat, lon, river_df):
+    if river_df.empty:
+        return None, 9999.0
+    
+    min_dist = float("inf")
+    nearest_row = None
+    
+    for _, row in river_df.iterrows():
+        try:
+            r_lat = float(row["latitude"])
+            r_lon = float(row["longitude"])
+            dist = calculate_distance(lat, lon, r_lat, r_lon)
+            if dist < min_dist:
+                min_dist = dist
+                nearest_row = row
+        except (ValueError, TypeError):
+            continue
+            
+    return nearest_row, min_dist
+
+
+
 # Function to search location name using Open-Meteo Geocoding API
 def search_location_by_name(location_name):
     try:
@@ -225,9 +282,7 @@ def search_location_by_name(location_name):
 
         return location_data
 
-    except Exception as e:
-        st.warning("Location search failed.")
-        st.write(e)
+    except Exception:
         return None
 
 
@@ -277,7 +332,12 @@ def get_live_weather(latitude, longitude):
         (hourly_df["time"] <= current_time)
     ]["precipitation"].sum()
 
+    # Ensure 3-day rainfall is at least equal to 24h rainfall
+    rainfall_3d = max(rainfall_3d, rainfall_24h)
+
     weather_data = {
+        "latitude": latitude,
+        "longitude": longitude,
         "temperature": current["temperature_2m"],
         "humidity": current["relative_humidity_2m"],
         "current_precipitation": current["precipitation"],
@@ -287,6 +347,7 @@ def get_live_weather(latitude, longitude):
     }
 
     return weather_data
+
 
 
 def get_marker_color(prediction):
@@ -366,15 +427,16 @@ def save_prediction_history(
 
 def get_supabase_client():
     try:
-        supabase_url = st.secrets["SUPABASE_URL"]
-        supabase_key = st.secrets["SUPABASE_KEY"]
+        supabase_url = st.secrets.get("SUPABASE_URL", "")
+        supabase_key = st.secrets.get("SUPABASE_KEY", "")
+
+        if not supabase_url or not supabase_key or "paste_your" in supabase_url:
+            return None
 
         supabase = create_client(supabase_url, supabase_key)
         return supabase
 
-    except Exception as e:
-        st.warning("Supabase is not configured correctly.")
-        st.write(e)
+    except Exception:
         return None
 
 
@@ -416,9 +478,7 @@ def save_prediction_to_supabase(
         supabase.table("prediction_history").insert(record).execute()
         return True
 
-    except Exception as e:
-        st.error("Failed to save prediction to Supabase.")
-        st.write(e)
+    except Exception:
         return False
 
 
@@ -440,10 +500,9 @@ def load_prediction_history_from_supabase():
 
         return pd.DataFrame(response.data)
 
-    except Exception as e:
-        st.error("Failed to load prediction history from Supabase.")
-        st.write(e)
+    except Exception:
         return pd.DataFrame()
+
 
 
 def show_prediction_analytics():
@@ -502,11 +561,18 @@ def show_prediction_analytics():
 
 def send_telegram_alert(message):
     try:
-        bot_token = st.secrets["TELEGRAM_BOT_TOKEN"]
-        chat_id = st.secrets["TELEGRAM_CHAT_ID"]
+        bot_token = get_secret_safe("TELEGRAM_BOT_TOKEN", "")
+        chat_id = get_secret_safe("TELEGRAM_CHAT_ID", "")
 
-        if "paste_your" in bot_token or "paste_your" in chat_id:
-            return False, "Telegram token or chat ID is not configured."
+        if (
+            not bot_token 
+            or not chat_id 
+            or "paste_your" in bot_token 
+            or "paste_your" in chat_id
+            or bot_token.strip() == ""
+            or chat_id.strip() == ""
+        ):
+            return False, "Telegram alert is not configured yet."
 
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
 
@@ -520,10 +586,10 @@ def send_telegram_alert(message):
         if response.status_code == 200:
             return True, "Telegram alert sent successfully."
         else:
-            return False, f"Telegram alert failed: {response.text}"
+            return False, "Telegram alert service is temporarily unavailable. Please check your credentials."
 
-    except Exception as e:
-        return False, f"Telegram alert error: {e}"
+    except Exception:
+        return False, "Failed to connect to Telegram. Please check your network connection."
 
 
 def create_flood_alert_message(
@@ -704,7 +770,20 @@ def generate_gemini_explanation(
     confidence
 ):
     try:
-        gemini_api_key = st.secrets["GEMINI_API_KEY"]
+        gemini_api_key = st.secrets.get("GEMINI_API_KEY", "")
+        # Define logging configuration if not done
+        logging.basicConfig(level=logging.INFO)
+        app_logger = logging.getLogger(__name__)
+        app_logger.info("Generating Gemini content explanation...")
+
+        if (
+            not gemini_api_key
+            or "paste_your" in gemini_api_key
+            or gemini_api_key.strip() == ""
+        ):
+            return (
+                "Gemini is not connected yet. Add your real GEMINI_API_KEY in .streamlit/secrets.toml."
+            )
 
         client = genai.Client(api_key=gemini_api_key)
 
@@ -716,7 +795,7 @@ Explain this flood prediction in simple beginner-friendly English.
 Important rules:
 - Do not say this is an official government warning.
 - Say this is only an AI decision-support explanation.
-- Keep the explanation clear and useful.
+- Keep it short and clear.
 - Give safety advice, but tell the user to follow official disaster management alerts.
 
 Prediction details:
@@ -748,8 +827,10 @@ Give output in this format:
 
         return response.text
 
-    except Exception as e:
-        return f"Gemini explanation is not available. Error: {e}"
+    except Exception:
+        return (
+            "Gemini is not connected yet. Add your real GEMINI_API_KEY in .streamlit/secrets.toml."
+        )
 
 
 def load_admin_prediction_data():
@@ -854,14 +935,28 @@ def show_admin_dashboard():
 
 def send_email_alert(subject, message):
     try:
-        email_sender = st.secrets["EMAIL_SENDER"]
-        email_password = st.secrets["EMAIL_PASSWORD"]
-        email_receiver = st.secrets["EMAIL_RECEIVER"]
-        smtp_server = st.secrets["SMTP_SERVER"]
-        smtp_port = int(st.secrets["SMTP_PORT"])
+        email_sender = get_secret_safe("EMAIL_SENDER", "")
+        email_password = get_secret_safe("EMAIL_PASSWORD", "")
+        email_receiver = get_secret_safe("EMAIL_RECEIVER", "")
+        smtp_server = get_secret_safe("SMTP_SERVER", "smtp.gmail.com")
+        
+        try:
+            smtp_port = int(get_secret_safe("SMTP_PORT", "587"))
+        except Exception:
+            smtp_port = 587
 
-        if "your_email" in email_sender or "your_email" in email_password:
-            return False, "Email secrets are not configured."
+        if (
+            not email_sender 
+            or not email_password 
+            or not email_receiver
+            or "your_email" in email_sender 
+            or "your_email" in email_password
+            or "receiver_email" in email_receiver
+            or email_sender.strip() == ""
+            or email_password.strip() == ""
+            or email_receiver.strip() == ""
+        ):
+            return False, "Email alert is not configured yet."
 
         email = MIMEMultipart()
         email["From"] = email_sender
@@ -878,8 +973,8 @@ def send_email_alert(subject, message):
 
         return True, "Email alert sent successfully."
 
-    except Exception as e:
-        return False, f"Email alert error: {e}"
+    except Exception:
+        return False, "Failed to send email alert. Please check your network connection or SMTP settings."
 
 
 
@@ -905,15 +1000,28 @@ if st.sidebar.button("Search Location"):
     location_result = search_location_by_name(location_query)
 
     if location_result:
-        st.session_state["selected_latitude"] = float(location_result["latitude"])
-        st.session_state["selected_longitude"] = float(location_result["longitude"])
+        new_lat = float(location_result["latitude"])
+        new_lon = float(location_result["longitude"])
+        st.session_state["selected_latitude"] = new_lat
+        st.session_state["selected_longitude"] = new_lon
         st.session_state["selected_location_name"] = location_result["name"]
 
         st.sidebar.success(
             f"Location found: {location_result['name']}, {location_result['admin1']}, {location_result['country']}"
         )
+        
+        # Auto-fetch weather for the searched location
+        try:
+            weather_data = get_live_weather(new_lat, new_lon)
+            st.session_state["weather"] = weather_data
+            st.sidebar.success("Live weather loaded automatically.")
+        except Exception:
+            if "weather" in st.session_state:
+                st.session_state.pop("weather")
+            st.sidebar.warning("Could not automatically load weather data. Please use 'Get Live Weather' button.")
     else:
         st.sidebar.error("Location not found. Please try another city name.")
+
 
 st.sidebar.header("📍 Selected Coordinates")
 
@@ -952,31 +1060,67 @@ st.sidebar.header("🌊 River Level Data")
 river_data = load_river_level_data()
 
 if not river_data.empty:
-    station_options = river_data["station_name"].tolist()
+    station_options = ["Manual Input"] + river_data["station_name"].tolist()
 
+    # Find nearest station to pre-select
+    nearest_station_row, nearest_dist = find_nearest_station(latitude, longitude, river_data)
+    default_index = 0
+    if nearest_station_row is not None and nearest_dist <= 50.0:
+        nearest_station_name = nearest_station_row["station_name"]
+        if nearest_station_name in station_options:
+            default_index = station_options.index(nearest_station_name)
+
+    # Use coordinates in key so selectbox resets when location changes
+    selectbox_key = f"river_station_select_{latitude}_{longitude}"
+    
     selected_station = st.sidebar.selectbox(
         "Select River Station",
-        station_options
+        station_options,
+        index=default_index,
+        key=selectbox_key
     )
 
-    selected_river_row = river_data[
-        river_data["station_name"] == selected_station
-    ].iloc[0]
+    if selected_station != "Manual Input":
+        selected_river_row = river_data[
+            river_data["station_name"] == selected_station
+        ].iloc[0]
 
-    river_level_default = float(selected_river_row["river_level"])
-    warning_level = float(selected_river_row["warning_level"])
-    danger_level = float(selected_river_row["danger_level"])
+        # Calculate actual distance to selected station
+        selected_dist = calculate_distance(
+            latitude,
+            longitude,
+            float(selected_river_row["latitude"]),
+            float(selected_river_row["longitude"])
+        )
 
-    river_status = get_river_status(
-        river_level_default,
-        warning_level,
-        danger_level
-    )
+        river_level_default = float(selected_river_row["river_level"])
+        warning_level = float(selected_river_row["warning_level"])
+        danger_level = float(selected_river_row["danger_level"])
 
-    st.sidebar.write("River:", selected_river_row["river_name"])
-    st.sidebar.write("State:", selected_river_row["state"])
-    st.sidebar.write("Latest Reading:", selected_river_row["reading_time"])
-    st.sidebar.write("River Status:", river_status)
+        river_status = get_river_status(
+            river_level_default,
+            warning_level,
+            danger_level
+        )
+
+        st.sidebar.write("River:", selected_river_row["river_name"])
+        st.sidebar.write("State:", selected_river_row["state"])
+        st.sidebar.write("Latest Reading:", selected_river_row["reading_time"])
+        st.sidebar.write(f"Distance to Station: {selected_dist:.2f} km")
+        st.sidebar.write("River Status:", river_status)
+
+        if selected_dist > 50.0:
+            st.sidebar.warning(
+                f"⚠️ Selected station is {selected_dist:.1f} km away. "
+                "Consider entering manual river data."
+            )
+    else:
+        river_level_default = 1.5
+        warning_level = 5.0
+        danger_level = 6.0
+        river_status = "Normal"
+        selected_dist = 0.0
+        st.sidebar.info("No nearby monitoring station within 50 km. Enter river level manually below.")
 
 else:
     river_level_default = 4.5
@@ -984,6 +1128,7 @@ else:
     danger_level = 6.0
     river_status = "Normal"
     selected_station = "Manual River Level"
+    selected_dist = 0.0
     st.sidebar.warning("river_levels.csv not found. Using manual river level.")
 
 river_level = st.sidebar.number_input(
@@ -995,19 +1140,33 @@ river_level = st.sidebar.number_input(
 
 st.sidebar.header("🌦️ Environmental Data")
 
+# Auto-fetch live weather if cache is empty or coordinates changed
+if "weather" not in st.session_state or (
+    round(st.session_state["weather"].get("latitude", 0.0), 4) != round(latitude, 4)
+    or round(st.session_state["weather"].get("longitude", 0.0), 4) != round(longitude, 4)
+):
+    try:
+        with st.sidebar.spinner("Fetching live weather..."):
+            weather_data = get_live_weather(latitude, longitude)
+            st.session_state["weather"] = weather_data
+    except Exception:
+        if "weather" in st.session_state:
+            st.session_state.pop("weather")
+
 weather = None
+if "weather" in st.session_state:
+    weather = st.session_state["weather"]
+else:
+    st.sidebar.warning("⚠️ Live weather API is currently offline. Using default fallback values.")
 
 if st.sidebar.button("Get Live Weather"):
     try:
-        weather = get_live_weather(latitude, longitude)
-        st.session_state["weather"] = weather
+        weather_data = get_live_weather(latitude, longitude)
+        st.session_state["weather"] = weather_data
         st.sidebar.success("Live weather loaded successfully.")
-    except Exception as e:
-        st.sidebar.error("Could not load weather data.")
-        st.sidebar.write(e)
-
-if "weather" in st.session_state:
-    weather = st.session_state["weather"]
+        st.rerun()
+    except Exception:
+        st.sidebar.error("Could not load weather data. Please check your internet connection or try again later.")
 
 if weather:
     rainfall_24h_default = float(weather["rainfall_24h"])
@@ -1015,10 +1174,10 @@ if weather:
     humidity_default = float(weather["humidity"])
     temperature_default = float(weather["temperature"])
 else:
-    rainfall_24h_default = 80.0
-    rainfall_3d_default = 180.0
-    humidity_default = 80.0
-    temperature_default = 28.0
+    rainfall_24h_default = 0.0
+    rainfall_3d_default = 0.0
+    humidity_default = 60.0
+    temperature_default = 25.0
 
 rainfall_24h = st.sidebar.number_input(
     "Rainfall in last 24 hours (mm)",
@@ -1031,6 +1190,11 @@ rainfall_3d = st.sidebar.number_input(
     min_value=0.0,
     value=rainfall_3d_default
 )
+
+# Enforce that 3-day rainfall is at least equal to 24h rainfall
+if rainfall_3d < rainfall_24h:
+    st.sidebar.warning("⚠️ 3-day rainfall cannot be less than 24-hour rainfall. Adjusting 3-day rainfall to match.")
+    rainfall_3d = rainfall_24h
 
 humidity = st.sidebar.number_input(
     "Humidity (%)",
@@ -1051,10 +1215,16 @@ elevation = st.sidebar.number_input(
     value=35.0
 )
 
+# Set distance_to_river_default to the calculated distance if within reasonable range (<= 50km) and a station is selected
+if not river_data.empty and selected_station != "Manual Input" and selected_dist <= 50.0:
+    distance_to_river_default = round(selected_dist, 2)
+else:
+    distance_to_river_default = 2.0
+
 distance_to_river = st.sidebar.number_input(
     "Distance to River (km)",
     min_value=0.0,
-    value=2.0
+    value=distance_to_river_default
 )
 
 past_flood_count = st.sidebar.number_input(
@@ -1078,6 +1248,11 @@ if not river_data.empty:
     col1, col2, col3, col4 = st.columns(4)
 
     col1.metric("Selected Station", selected_station)
+    if selected_station != "Manual Input":
+        col1.caption(f"Distance: {selected_dist:.2f} km from selected location")
+    else:
+        col1.caption("Manual coordinate input mode")
+    
     col2.metric("River Level", f"{river_level} m")
     col3.metric("Warning Level", f"{warning_level} m")
     col4.metric("Danger Level", f"{danger_level} m")
@@ -1145,25 +1320,28 @@ if st.button("Predict Flood Risk"):
 
     st.success("Prediction saved successfully in history.")
 
-    supabase_saved = save_prediction_to_supabase(
-        latitude,
-        longitude,
-        rainfall_24h,
-        rainfall_3d,
-        river_level,
-        humidity,
-        temperature,
-        elevation,
-        distance_to_river,
-        past_flood_count,
-        prediction,
-        confidence
-    )
+    if is_supabase_configured():
+        supabase_saved = save_prediction_to_supabase(
+            latitude,
+            longitude,
+            rainfall_24h,
+            rainfall_3d,
+            river_level,
+            humidity,
+            temperature,
+            elevation,
+            distance_to_river,
+            past_flood_count,
+            prediction,
+            confidence
+        )
 
-    if supabase_saved:
-        st.success("Prediction saved successfully to Supabase database.")
+        if supabase_saved:
+            st.success("Prediction saved successfully to Supabase database.")
+        else:
+            st.warning("Prediction was not saved to Supabase. Check Supabase URL, key, and table.")
     else:
-        st.warning("Prediction was not saved to Supabase. Check Supabase URL, key, and table.")
+        st.info("Supabase is not connected yet. Local CSV history is active.")
 
     st.subheader("🚨 Alerts System")
 
@@ -1341,13 +1519,16 @@ st.divider()
 
 st.subheader("☁️ Supabase Prediction History")
 
-supabase_history = load_prediction_history_from_supabase()
+if is_supabase_configured():
+    supabase_history = load_prediction_history_from_supabase()
 
-if not supabase_history.empty:
-    st.write("Latest predictions saved in Supabase:")
-    st.dataframe(supabase_history.head(10))
+    if not supabase_history.empty:
+        st.write("Latest predictions saved in Supabase:")
+        st.dataframe(supabase_history.head(10))
+    else:
+        st.info("No Supabase prediction history found yet.")
 else:
-    st.info("No Supabase prediction history found yet.")
+    st.info("Supabase is not connected yet. Local CSV history is active.")
 
 
 st.divider()
@@ -1363,10 +1544,7 @@ admin_password_input = st.text_input(
     type="password"
 )
 
-try:
-    correct_admin_password = st.secrets["ADMIN_PASSWORD"]
-except Exception:
-    correct_admin_password = "admin123"
+correct_admin_password = get_secret_safe("ADMIN_PASSWORD", "admin123")
 
 if admin_password_input:
     if admin_password_input == correct_admin_password:
